@@ -221,3 +221,11 @@ financial-transaction-etl/
     ├── 05_incremental_load.sql
     ├── 06_data_quality.sql
     └── 07_reporting_queries.sql
+
+## Future Enhancements
+
+- Add ETL audit logging
+- Implement stored procedures for reusable ETL processing
+- Add watermark-based incremental loading
+- Add pipeline scheduling
+- Build a Power BI dashboard
