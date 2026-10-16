@@ -182,6 +182,24 @@ I also used CTEs and window functions such as `ROW_NUMBER()` for analytical requ
 
 ---
 
+## ETL Audit Logging
+
+I added an ETL audit table to track each pipeline execution.
+
+The audit log captures:
+
+- Pipeline name
+- Start and end time
+- Source record count
+- Target record count
+- Records processed during the run
+- Run status
+- Error message
+
+Each ETL execution starts with a `RUNNING` status and is updated after processing and validation.
+
+This provides visibility into pipeline execution and helps with monitoring, troubleshooting, and reconciliation.
+---
 ## SQL Concepts Used
 
 During this project I practiced:
