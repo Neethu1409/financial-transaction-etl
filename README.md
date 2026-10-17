@@ -2,13 +2,13 @@
 
 ## About This Project
 
-I built this project to practice an end-to-end SQL-based Data Engineering workflow using financial transaction data.
+I built this project to practice an end-to-end SQL-based Data Engineering workflow using synthetic financial transaction data.
 
-The project simulates customer, account, and transaction data and shows how raw source data can be transformed into a reporting-ready dataset.
+The project simulates customer, account, and transaction data and demonstrates how source data can be transformed into a reporting-ready dataset.
 
-Instead of focusing only on individual SQL queries, I wanted to understand the complete flow:
+Instead of focusing only on individual SQL queries, the project covers the complete data flow:
 
-Source Data → ETL → Reporting Table → Data Quality → Incremental Load → Reporting
+Source Data → ETL → Reporting Table → Data Quality → Incremental Load → Audit Logging → Stored Procedure → Reporting
 
 All data used in this project is synthetic and created only for learning and portfolio purposes.
 
@@ -16,7 +16,7 @@ All data used in this project is synthetic and created only for learning and por
 
 ## Project Architecture
 
-The project uses three source tables:
+The project uses three main source tables:
 
 - Customers
 - Accounts
@@ -24,21 +24,27 @@ The project uses three source tables:
 
 The overall flow is:
 
-Customers + Accounts + Transactions  
-↓  
-Extract source data  
-↓  
-Join and transform the data  
-↓  
-Apply business rules  
-↓  
-Load the reporting table  
-↓  
-Validate source and target data  
-↓  
-Process new transactions incrementally  
-↓  
-Run business reporting queries
+```text
+Customers + Accounts + Transactions
+              ↓
+       Extract Source Data
+              ↓
+       Join and Transform
+              ↓
+     Apply Business Rules
+              ↓
+    Load Reporting Table
+              ↓
+ Data Quality & Reconciliation
+              ↓
+     Incremental Processing
+              ↓
+        Audit Logging
+              ↓
+      Stored Procedure
+              ↓
+      Business Reporting
+```
 
 ---
 
@@ -92,9 +98,9 @@ The pipeline reads data from the Customers, Accounts, and Transactions source ta
 
 ### Transform
 
-I used SQL joins and business rules to combine and transform the source data.
+SQL joins and business rules are used to combine and transform the source data.
 
-Some of the transformations include:
+Transformations include:
 
 - Joining customers with their accounts
 - Joining accounts with transactions
@@ -102,7 +108,7 @@ Some of the transformations include:
 - Categorizing transaction amounts
 - Converting transaction status into a reporting-friendly processing result
 
-For example:
+Example business rules:
 
 - Amount greater than 500 → High
 - Amount less than or equal to 500 → Normal
@@ -123,32 +129,45 @@ For the initial load, the source contains 12 transactions.
 
 The ETL process transforms and loads those records into the reporting table.
 
-After the load, I validate the source and target counts.
+After the load, source and target record counts are validated.
 
 Example:
 
-Source Count = 12  
+```text
+Source Count = 12
 Target Count = 12
+```
 
-The count check is only one part of validation, so additional data quality and reconciliation checks are also performed.
+Record count comparison is only one part of validation, so additional data quality and reconciliation checks are also performed.
 
 ---
 
 ## Incremental Load
 
-I also simulated a second day where three new transactions arrive.
+A second-day load is simulated with three new transactions.
 
-Instead of loading all transactions again, the pipeline identifies only transactions that do not already exist in the target.
+Instead of loading all transactions again, the pipeline identifies transactions that do not already exist in the target reporting table.
 
-The incremental logic compares the source transaction ID with the target transaction ID.
+The incremental logic compares the source `transaction_id` with the target `transaction_id`.
 
-This allows the target-loading step to process new records while avoiding duplicate transactions during reruns.
+This allows the pipeline to load only new records while preventing duplicate transactions during reruns.
+
+After the incremental load:
+
+```text
+Source Count = 15
+Target Count = 15
+```
+
+If the pipeline is executed again without new source records, zero records are inserted.
+
+This demonstrates idempotent processing because rerunning the load does not create duplicate transactions.
 
 ---
 
 ## Data Quality and Reconciliation
 
-After loading the data, I perform several validation checks before considering the ETL successful.
+After loading the data, several validation checks are performed before considering the ETL successful.
 
 These include:
 
@@ -159,17 +178,99 @@ These include:
 - Missing record validation
 - Business rule validation
 
-For example, matching source and target counts alone does not guarantee that the data is correct.
+Matching source and target counts alone does not guarantee that the data is correct.
 
-I also compare transaction amounts and verify that the transformation rules were applied correctly.
+Transaction amounts are also reconciled, missing records are checked, and transformation rules are validated.
+
+---
+
+## ETL Audit Logging
+
+An `etl_audit` table is used to track ETL pipeline executions.
+
+The audit log captures:
+
+- Pipeline name
+- Start time
+- End time
+- Source record count
+- Target record count
+- Records loaded
+- Run status
+- Error message
+
+Each ETL execution begins with a `RUNNING` status.
+
+After successful processing, the audit record is updated to `SUCCESS`.
+
+If a SQL exception occurs, exception handling updates the run status to `FAILED`.
+
+Audit logging provides visibility into pipeline execution and supports monitoring, troubleshooting, and reconciliation.
+
+---
+
+## Stored Procedure and Transaction Handling
+
+The ETL workflow is automated using a MySQL stored procedure named:
+
+`sp_transaction_etl`
+
+Instead of manually executing each SQL statement separately, the stored procedure groups the related ETL operations into one reusable database process.
+
+The procedure performs:
+
+- ETL audit initialization
+- Source record count capture
+- Incremental transaction loading
+- Customer and account joins
+- Business-rule transformations
+- Loaded-record tracking using `ROW_COUNT()`
+- Target record count capture
+- Exception handling
+- Transaction control using `COMMIT` and `ROLLBACK`
+- SUCCESS / FAILED audit status tracking
+
+The procedure can be executed using:
+
+```sql
+CALL sp_transaction_etl();
+```
+
+The ETL processing is executed within a database transaction.
+
+If processing completes successfully:
+
+```text
+ETL Processing
+      ↓
+COMMIT
+      ↓
+SUCCESS
+```
+
+If a SQL exception occurs before the transaction is committed:
+
+```text
+ETL Processing
+      ↓
+SQL Exception
+      ↓
+Exception Handler
+      ↓
+ROLLBACK
+      ↓
+FAILED
+```
+
+This helps prevent an ETL run from leaving unintended partial uncommitted changes.
 
 ---
 
 ## Reporting
 
-Once the data is loaded and validated, I use the reporting table for business analysis.
+Once the data is loaded and validated, the reporting table can be used for business analysis.
 
-The reporting queries include:
+Reporting queries include:
 
 - Completed vs failed transaction counts
 - Transaction volume by transaction type
@@ -178,34 +279,17 @@ The reporting queries include:
 - High vs normal transaction categories
 - Highest transaction for each account
 
-I also used CTEs and window functions such as `ROW_NUMBER()` for analytical requirements.
+CTEs and window functions such as `ROW_NUMBER()` are also used for analytical requirements.
 
 ---
 
-## ETL Audit Logging
-
-I added an ETL audit table to track each pipeline execution.
-
-The audit log captures:
-
-- Pipeline name
-- Start and end time
-- Source record count
-- Target record count
-- Records processed during the run
-- Run status
-- Error message
-
-Each ETL execution starts with a `RUNNING` status and is updated after processing and validation.
-
-This provides visibility into pipeline execution and helps with monitoring, troubleshooting, and reconciliation.
----
 ## SQL Concepts Used
 
 During this project I practiced:
 
 - DDL and DML
-- Primary and Foreign Keys
+- Primary Keys
+- Foreign Keys
 - INNER JOIN
 - LEFT JOIN
 - WHERE
@@ -217,10 +301,19 @@ During this project I practiced:
 - CASE WHEN
 - CTEs
 - Window Functions
-- ROW_NUMBER
+- ROW_NUMBER()
+- Stored Procedures
+- Variables
+- `ROW_COUNT()`
 - Incremental Loading
+- Idempotent Processing
 - Data Quality Validation
 - Source-to-Target Reconciliation
+- ETL Audit Logging
+- Exception Handling
+- Transaction Control
+- COMMIT
+- ROLLBACK
 
 ---
 
@@ -238,12 +331,72 @@ financial-transaction-etl/
     ├── 04_etl_load.sql
     ├── 05_incremental_load.sql
     ├── 06_data_quality.sql
-    └── 07_reporting_queries.sql
+    ├── 07_reporting_queries.sql
+    ├── 08_etl_audit.sql
+    └── 09_stored_procedure.sql
+```
+
+---
+
+## How to Run the Project
+
+Run the SQL scripts in the following order:
+
+1. `01_create_tables.sql` – Create source tables
+2. `02_insert_sample_data.sql` – Insert synthetic sample data
+3. `03_transformations.sql` – Practice transformation queries
+4. `04_etl_load.sql` – Create and populate the reporting table
+5. `05_incremental_load.sql` – Simulate and process new transactions
+6. `06_data_quality.sql` – Perform data quality and reconciliation checks
+7. `07_reporting_queries.sql` – Execute analytical reporting queries
+8. `08_etl_audit.sql` – Demonstrate ETL execution auditing
+9. `09_stored_procedure.sql` – Create the reusable ETL stored procedure
+
+After creating the stored procedure, execute:
+
+```sql
+CALL sp_transaction_etl();
+```
+
+---
+
+## Tools Used
+
+- MySQL
+- MySQL Workbench
+- SQL
+- IntelliJ IDEA
+- Git
+- GitHub
+
+---
+
+## What I Learned
+
+Through this project, I practiced how individual SQL concepts work together in an end-to-end Data Engineering workflow.
+
+I learned how to:
+
+- Design relational source tables
+- Connect related datasets using joins
+- Transform source data using business rules
+- Build a reporting-ready target table
+- Implement initial and incremental loads
+- Make incremental processing idempotent
+- Perform data quality and reconciliation checks
+- Track pipeline executions using audit logging
+- Package ETL logic into a stored procedure
+- Handle SQL exceptions
+- Use transaction control to commit successful processing or roll back uncommitted changes
+- Manage project code using Git and GitHub
+
+---
 
 ## Future Enhancements
 
-- Add ETL audit logging
-- Implement stored procedures for reusable ETL processing
-- Add watermark-based incremental loading
-- Add pipeline scheduling
-- Build a Power BI dashboard
+Future versions of this project can include:
+
+- Watermark-based incremental loading
+- Automated pipeline scheduling and orchestration
+- Power BI dashboard development
+- More detailed SQL exception diagnostics
