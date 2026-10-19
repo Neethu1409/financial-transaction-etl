@@ -2,13 +2,13 @@
 
 ## About This Project
 
-I built this project to practice an end-to-end SQL-based Data Engineering workflow using synthetic financial transaction data.
+I built this project to practice an end-to-end Data Engineering workflow using synthetic financial transaction data.
 
 The project simulates customer, account, and transaction data and demonstrates how source data can be transformed into a reporting-ready dataset.
 
 Instead of focusing only on individual SQL queries, the project covers the complete data flow:
 
-Source Data → ETL → Reporting Table → Data Quality → Incremental Load → Audit Logging → Stored Procedure → Reporting
+Source Data → ETL → Reporting Table → Data Quality → Incremental Load → Audit Logging → Stored Procedure → Airflow Orchestration → Reconciliation → Reporting
 
 All data used in this project is synthetic and created only for learning and portfolio purposes.
 
@@ -27,23 +27,33 @@ The overall flow is:
 ```text
 Customers + Accounts + Transactions
               ↓
-       Extract Source Data
+       MySQL Source Data
+              ↓
+      Apache Airflow DAG
+              ↓
+         check_source
+              ↓
+       Validate Source Data
+              ↓
+           run_etl
+              ↓
+   CALL sp_transaction_etl()
               ↓
        Join and Transform
               ↓
      Apply Business Rules
               ↓
-    Load Reporting Table
+    Incremental ETL Load
               ↓
- Data Quality & Reconciliation
+ customer_transaction_report
               ↓
-     Incremental Processing
+         Audit Logging
               ↓
-        Audit Logging
+       validate_target
               ↓
-      Stored Procedure
+ Count + Amount Reconciliation
               ↓
-      Business Reporting
+       Business Reporting
 ```
 
 ---
@@ -243,9 +253,9 @@ If processing completes successfully:
 ```text
 ETL Processing
       ↓
-COMMIT
+    COMMIT
       ↓
-SUCCESS
+   SUCCESS
 ```
 
 If a SQL exception occurs before the transaction is committed:
@@ -253,16 +263,140 @@ If a SQL exception occurs before the transaction is committed:
 ```text
 ETL Processing
       ↓
-SQL Exception
+ SQL Exception
       ↓
 Exception Handler
       ↓
-ROLLBACK
+   ROLLBACK
       ↓
-FAILED
+    FAILED
 ```
 
 This helps prevent an ETL run from leaving unintended partial uncommitted changes.
+
+---
+
+## Apache Airflow Orchestration
+
+Apache Airflow is used to orchestrate the ETL workflow.
+
+The Airflow DAG is named:
+
+`financial_transaction_etl`
+
+The DAG contains three tasks:
+
+```text
+check_source
+     ↓
+run_etl
+     ↓
+validate_target
+```
+
+### 1. check_source
+
+The first task connects to the MySQL database using PyMySQL.
+
+It checks whether source transaction data is available by executing:
+
+```sql
+SELECT COUNT(*)
+FROM transactions;
+```
+
+During testing, the task successfully identified:
+
+```text
+Source transaction count: 15
+```
+
+If no source transactions are available, the task raises an error.
+
+### 2. run_etl
+
+After the source check succeeds, Airflow executes the ETL stored procedure:
+
+```sql
+CALL sp_transaction_etl();
+```
+
+The stored procedure performs the incremental and idempotent ETL processing and updates the ETL audit information.
+
+Airflow therefore handles the workflow orchestration while MySQL performs the SQL transformation and loading logic.
+
+### 3. validate_target
+
+After the ETL completes, Airflow performs source-to-target reconciliation.
+
+The task validates:
+
+```text
+Source Count = Target Count
+```
+
+and:
+
+```text
+Source Total Amount = Target Total Amount
+```
+
+The completed test produced:
+
+```text
+Source Count  = 15
+Target Count  = 15
+
+Source Amount = 5610.50
+Target Amount = 5610.50
+```
+
+If either validation fails, the task raises an error and Airflow marks the task as failed.
+
+If both validations pass:
+
+```text
+Data reconciliation successful
+```
+
+---
+
+## Airflow Retry and Failure Handling
+
+The Airflow DAG is configured with:
+
+```python
+"retries": 2,
+"retry_delay": timedelta(minutes=5)
+```
+
+This allows a failed task to be retried up to two times with a five-minute delay between attempts.
+
+Task dependencies ensure that downstream processing does not continue until the required upstream task succeeds.
+
+The current project uses manual DAG triggering for development and testing:
+
+```python
+schedule=None
+```
+
+Automated scheduling can be added as a future enhancement.
+
+---
+
+## Secure Database Connectivity
+
+Airflow connects to MySQL using Python and PyMySQL.
+
+The database password is not hardcoded in the DAG.
+
+It is supplied through an environment variable:
+
+```python
+password=os.environ["FINANCIAL_DB_PASSWORD"]
+```
+
+This keeps the database password out of the source code and GitHub repository.
 
 ---
 
@@ -317,23 +451,46 @@ During this project I practiced:
 
 ---
 
+## Airflow Concepts Used
+
+During the orchestration portion of the project I practiced:
+
+- DAG creation
+- Airflow tasks
+- Task dependencies
+- TaskFlow API
+- Manual DAG triggering
+- Retry configuration
+- Task logs
+- Failure handling
+- Python-to-MySQL connectivity
+- Environment variables
+- Stored procedure orchestration
+- Post-load reconciliation
+
+---
+
 ## Project Structure
 
 ```text
 financial-transaction-etl/
 │
 ├── README.md
+├── .gitignore
 │
-└── sql/
-    ├── 01_create_tables.sql
-    ├── 02_insert_sample_data.sql
-    ├── 03_transformations.sql
-    ├── 04_etl_load.sql
-    ├── 05_incremental_load.sql
-    ├── 06_data_quality.sql
-    ├── 07_reporting_queries.sql
-    ├── 08_etl_audit.sql
-    └── 09_stored_procedure.sql
+├── sql/
+│   ├── 01_create_tables.sql
+│   ├── 02_insert_sample_data.sql
+│   ├── 03_transformations.sql
+│   ├── 04_etl_load.sql
+│   ├── 05_incremental_load.sql
+│   ├── 06_data_quality.sql
+│   ├── 07_reporting_queries.sql
+│   ├── 08_etl_audit.sql
+│   └── 09_stored_procedure.sql
+│
+└── airflow/
+    └── financial_transaction_etl.py
 ```
 
 ---
@@ -352,10 +509,22 @@ Run the SQL scripts in the following order:
 8. `08_etl_audit.sql` – Demonstrate ETL execution auditing
 9. `09_stored_procedure.sql` – Create the reusable ETL stored procedure
 
-After creating the stored procedure, execute:
+After creating the stored procedure, it can be tested directly using:
 
 ```sql
 CALL sp_transaction_etl();
+```
+
+For Airflow orchestration, configure the `FINANCIAL_DB_PASSWORD` environment variable and run the `financial_transaction_etl` DAG.
+
+The Airflow workflow executes:
+
+```text
+check_source
+     ↓
+run_etl
+     ↓
+validate_target
 ```
 
 ---
@@ -365,6 +534,10 @@ CALL sp_transaction_etl();
 - MySQL
 - MySQL Workbench
 - SQL
+- Python
+- PyMySQL
+- Apache Airflow
+- WSL2 / Ubuntu
 - IntelliJ IDEA
 - Git
 - GitHub
@@ -373,7 +546,7 @@ CALL sp_transaction_etl();
 
 ## What I Learned
 
-Through this project, I practiced how individual SQL concepts work together in an end-to-end Data Engineering workflow.
+Through this project, I practiced how individual SQL and orchestration concepts work together in an end-to-end Data Engineering workflow.
 
 I learned how to:
 
@@ -388,6 +561,13 @@ I learned how to:
 - Package ETL logic into a stored procedure
 - Handle SQL exceptions
 - Use transaction control to commit successful processing or roll back uncommitted changes
+- Connect Python to MySQL using PyMySQL
+- Build and execute an Apache Airflow DAG
+- Define task dependencies
+- Configure task retries
+- Use Airflow to execute a MySQL stored procedure
+- Perform post-load count and amount reconciliation
+- Keep database passwords out of source code
 - Manage project code using Git and GitHub
 
 ---
@@ -397,6 +577,16 @@ I learned how to:
 Future versions of this project can include:
 
 - Watermark-based incremental loading
-- Automated pipeline scheduling and orchestration
+- Automated Airflow scheduling
+- Airflow Connections or a secrets-management solution
 - Power BI dashboard development
 - More detailed SQL exception diagnostics
+- Pipeline alerts and notifications
+
+---
+
+## Project Purpose
+
+This project was built for learning and portfolio purposes using synthetic data.
+
+The project combines SQL, ETL, incremental processing, data quality, reconciliation, audit logging, stored procedures, transaction handling, Python database connectivity, and Apache Airflow orchestration into one end-to-end Data Engineering workflow.
